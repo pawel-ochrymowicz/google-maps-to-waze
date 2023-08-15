@@ -1,10 +1,7 @@
 package telegram
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -53,17 +50,14 @@ func New(token string) (Client, error) {
 }
 
 type Webhook struct {
-	Path    string
-	Handler func(w http.ResponseWriter, r *http.Request)
+	Handler http.Handler
 }
 
-// Webhook registers a webhook for the given domain and returns a Webhook struct containing the webhook path and handler.
-func (c *clientImpl) Webhook(domain string, f OnMessage) (*Webhook, error) {
-	if domain == "" {
+// Webhook registers a webhook for the given link and returns a Webhook struct containing the webhook path and handler.
+func (c *clientImpl) Webhook(link string, f OnMessage) (*Webhook, error) {
+	if link == "" {
 		return nil, errors.New("failed to read empty domain")
 	}
-	p := securePath()
-	link := fmt.Sprintf("%s%s", domain, p)
 	wh, err := tgbotapi.NewWebhook(link)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to initialize webhook")
@@ -74,8 +68,7 @@ func (c *clientImpl) Webhook(domain string, f OnMessage) (*Webhook, error) {
 	}
 	h := c.handler(f)
 	return &Webhook{
-		Path:    p,
-		Handler: h,
+		Handler: http.HandlerFunc(h),
 	}, nil
 }
 
@@ -89,14 +82,20 @@ func (c *clientImpl) handler(f OnMessage) func(w http.ResponseWriter, r *http.Re
 	return func(w http.ResponseWriter, r *http.Request) {
 		update, err := c.bot.HandleUpdate(r)
 		if err != nil {
+			log.Errorf("failed to handle update: %v", err)
 			writeError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		msg := c.message(update)
 		err = f(msg)
 		if err != nil {
-			writeError(w, err.Error(), http.StatusInternalServerError)
-			return
+			log.Errorf("failed to process message: %v", err)
+			err = msg.Reply(&Reply{
+				Text: "Try again",
+			})
+			if err != nil {
+				log.Errorf("failed to reply to message: %v", err)
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 	}
@@ -134,17 +133,4 @@ func (c *clientImpl) Poll(f OnMessage) error {
 		}
 	}
 	return errors.New("failed to receive updates")
-}
-
-func securePath() string {
-	token := secureToken(16)
-	return fmt.Sprintf("/telegram-webhook/%s", token)
-}
-
-func secureToken(length int) string {
-	b := make([]byte, length)
-	if _, err := rand.Read(b); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
 }
