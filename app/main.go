@@ -6,14 +6,16 @@ import (
 	"github.com/pawel-ochrymowicz/google-maps-to-waze/pkg/telegram"
 	"github.com/pawel-ochrymowicz/google-maps-to-waze/pkg/text"
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
 
 type telegramOpts struct {
-	Token  string
-	Domain string
+	Token       string
+	WebhookLink string
 }
 
 type opts struct {
@@ -23,17 +25,17 @@ type opts struct {
 func main() {
 	opts := &opts{
 		telegram: telegramOpts{
-			Token:  os.Getenv("TELEGRAM_TOKEN"),
-			Domain: os.Getenv("TELEGRAM_DOMAIN")}}
+			Token:       os.Getenv("TELEGRAM_TOKEN"),
+			WebhookLink: os.Getenv("TELEGRAM_WEBHOOK_LINK")}}
 
 	tg, err := telegram.New(opts.telegram.Token)
 	if err != nil {
 		panic(errors.Wrap(err, "failed to initialize telegram"))
 	}
 
-	// Initialize polling api when no domain provided
+	// Initialize polling api when no webhook link provided
 	ch := make(chan error)
-	if opts.telegram.Domain == "" {
+	if opts.telegram.WebhookLink == "" {
 		go func() {
 			if err := tg.Poll(onMessage); err != nil {
 				ch <- err
@@ -41,15 +43,21 @@ func main() {
 		}()
 	}
 	var serverOpts []serverOpt
-	if opts.telegram.Domain != "" {
+	if opts.telegram.WebhookLink != "" {
 		var wh *telegram.Webhook
-		wh, err = tg.Webhook(opts.telegram.Domain, onMessage)
+		wh, err = tg.Webhook(opts.telegram.WebhookLink, onMessage)
 		if err != nil {
 			panic(errors.Wrap(err, "failed to initialize webhook"))
 		}
-		serverOpts = append(serverOpts, withTelegramWebhook(wh))
+		var u *url.URL
+		u, err = url.Parse(opts.telegram.WebhookLink)
+		if err != nil {
+			panic(errors.Wrap(err, "failed to parse webhook url"))
+		}
+		serverOpts = append(serverOpts, withTelegramWebhook(u.Path, wh))
 	}
 	go func() {
+		log.Infof("Starting server on port %d", serverPort)
 		srv := server(serverOpts...)
 		if err := srv.ListenAndServe(); err != nil {
 			ch <- err
@@ -72,7 +80,7 @@ Examples:
 )
 
 // httpClient is a http client used to make requests to Google Maps
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+var httpClient = &http.Client{Timeout: 15 * time.Second, Jar: nil}
 
 // onMessage is a callback function that is called when a message is received.
 func onMessage(message *telegram.Message) error {
@@ -87,8 +95,13 @@ func onMessage(message *telegram.Message) error {
 	if err != nil {
 		return errors.Wrap(err, "failed to parse url from message")
 	}
+	var googleMapsLink *maps.GoogleMapsLink
+	googleMapsLink, err = maps.ParseGoogleMapsFromURL(u, maps.HttpGetToInput(httpClient))
+	if err != nil {
+		return errors.Wrapf(err, "failed to parse google maps link: %s", u)
+	}
 	var wazeLink *maps.WazeLink
-	wazeLink, err = maps.GoogleMapsUrlToWazeLink(u, maps.HttpGetToInput(httpClient))
+	wazeLink, err = maps.WazeFromLocation(googleMapsLink)
 	if err != nil {
 		return errors.Wrap(err, "failed to map google maps url to waze link")
 	}
@@ -101,9 +114,9 @@ func onMessage(message *telegram.Message) error {
 type serverOpt func(*http.ServeMux)
 
 // withTelegramWebhook is a serverOpt that adds a webhook endpoint to the server.
-func withTelegramWebhook(wh *telegram.Webhook) serverOpt {
+func withTelegramWebhook(path string, wh *telegram.Webhook) serverOpt {
 	return func(mux *http.ServeMux) {
-		mux.Handle(wh.Path, http.HandlerFunc(wh.Handler))
+		mux.Handle(path, wh.Handler)
 	}
 }
 

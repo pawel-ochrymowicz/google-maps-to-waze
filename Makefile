@@ -11,9 +11,6 @@ export GOFLAGS := -mod=vendor
 bin/golangci-lint:
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s $(GOLANGCI_LINT_VERSION)
 
-run_poll:
-	TELEGRAM_TOKEN=$(TELEGRAM_TOKEN) go run ./app/main.go
-
 lint: bin/golangci-lint
 	./bin/golangci-lint run ./...
 
@@ -30,5 +27,11 @@ docker_build:
 
 docker_push:
 	docker push $(IMAGE_NAME):latest
+
+run_poll: build
+	TELEGRAM_TOKEN=$(TELEGRAM_TOKEN) bin/app
+
+run_webhook: build
+	TELEGRAM_TOKEN=$(TELEGRAM_TOKEN) TELEGRAM_WEBHOOK_LINK=$(TELEGRAM_WEBHOOK_LINK) bin/app
 
 .PHONY: run_poll lint test build ci docker_build docker_push
