@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 type LatLng struct {
-	Latitude  string
-	Longitude string
+	Latitude  float64
+	Longitude float64
 }
 
 type Location interface {
@@ -20,7 +21,7 @@ type Location interface {
 }
 
 const (
-	googleMapsLatLngRegex     = `([0-9]+\.[0-9]{7},[0-9]+\.[0-9]{7})`
+	googleMapsLatLngRegex     = `[-]?[\d]+[.][\d]*,[-]?[\d]+[.][\d]*`
 	googleMapsLatLngSeparator = ","
 )
 
@@ -32,7 +33,78 @@ func (l *GoogleMapsLink) LatLng() (*LatLng, error) {
 	return l.latLng, nil
 }
 
-type ToInput func(u *url.URL) (string, error)
+// ParseGoogleMapsFromURL extracts GoogleMapsLink from the given URL.
+func ParseGoogleMapsFromURL(u *url.URL, toInput UrlToInput) (*GoogleMapsLink, error) {
+	latLngPattern, err := regexp.Compile(googleMapsLatLngRegex)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to initialize parser")
+	}
+	latLngLookup := latLng(latLngPattern)
+	if latLngPattern.MatchString(u.Path) {
+		var latLng *LatLng
+		latLng, err = latLngLookup(u.Path)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to find lat lng in path: %s", u.Path)
+		}
+		return &GoogleMapsLink{
+			latLng: latLng,
+		}, nil
+	}
+	var input string
+	input, err = toInput(u)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get response history from url: %s", u.String())
+	}
+	if latLngPattern.MatchString(input) {
+		var latLng *LatLng
+		latLng, err = latLngLookup(input)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to find lat lng in response")
+		}
+		return &GoogleMapsLink{
+			latLng: latLng,
+		}, nil
+	}
+	return nil, fmt.Errorf("failed to find lat lng for url: %s", u.String())
+}
+
+var errNoLatLng = errors.New("failed to find the lat lng")
+
+func latLng(latLngPattern *regexp.Regexp) func(input string) (*LatLng, error) {
+	return func(input string) (*LatLng, error) {
+		matches := latLngPattern.FindAllString(input, 10)
+		if len(matches) == 0 {
+			return nil, errNoLatLng
+		}
+
+		latLngString := matches[len(matches)-1]
+		latLngParts := strings.Split(latLngString, googleMapsLatLngSeparator)
+
+		if len(latLngParts) != 2 {
+			return nil, errors.New("failed to parse lat lng")
+		}
+		parts := latLngParts
+		var lat, lng float64
+		lat, err := parsePointFromString(parts[0])
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to parse lat")
+		}
+		lng, err = parsePointFromString(parts[1])
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to parse lng")
+		}
+
+		latLng := &LatLng{Latitude: lat, Longitude: lng}
+		return latLng, nil
+	}
+}
+
+func parsePointFromString(point string) (float64, error) {
+	return strconv.ParseFloat(point, 64)
+}
+
+// UrlToInput is a function that takes a URL and returns a string that represents the input to the URL.
+type UrlToInput func(u *url.URL) (string, error)
 
 func HttpGetToInput(httpClient *http.Client) func(*url.URL) (string, error) {
 	return func(u *url.URL) (string, error) {
@@ -42,47 +114,13 @@ func HttpGetToInput(httpClient *http.Client) func(*url.URL) (string, error) {
 			return "", errors.Wrapf(err, "failed to request original url: %s", u.String())
 		}
 		defer resp.Body.Close()
-
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return "", errors.Wrap(err, "failed to read response body")
 		}
+
 		return string(bodyBytes), nil
 	}
-}
-
-// ParseGoogleMapsFromURL extracts GoogleMapsLink from the given URL.
-func ParseGoogleMapsFromURL(u *url.URL, toInput ToInput) (*GoogleMapsLink, error) {
-	latLngPattern, err := regexp.Compile(googleMapsLatLngRegex)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to initialize parser")
-	}
-	input := u.Path
-
-	if !latLngPattern.MatchString(input) {
-		input, err = toInput(u)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to resolve shortened URL")
-		}
-	}
-
-	matches := latLngPattern.FindAllString(input, 10)
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("failed to find the lat lng: %s", input)
-	}
-
-	latLngString := matches[len(matches)-1]
-	latLngParts := strings.Split(latLngString, googleMapsLatLngSeparator)
-
-	if len(latLngParts) != 2 {
-		return nil, errors.New("failed to parse lat lng")
-	}
-
-	latLng := &LatLng{Latitude: latLngParts[0], Longitude: latLngParts[1]}
-
-	return &GoogleMapsLink{
-		latLng: latLng,
-	}, nil
 }
 
 type WazeLink struct {
@@ -104,7 +142,7 @@ func WazeFromLocation(l Location) (*WazeLink, error) {
 		return nil, errors.Wrap(err, "failed to extract lat lng from location")
 	}
 
-	geoStr := fmt.Sprintf("%s,%s", latLng.Latitude, latLng.Longitude)
+	geoStr := fmt.Sprintf("%.7f,%.7f", latLng.Latitude, latLng.Longitude)
 	raw := fmt.Sprintf(wazeLinkTemplate, geoStr)
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -112,13 +150,4 @@ func WazeFromLocation(l Location) (*WazeLink, error) {
 	}
 	w := &WazeLink{url: u}
 	return w, nil
-}
-
-// GoogleMapsUrlToWazeLink is just a facade to convert from Google Maps to Waze
-func GoogleMapsUrlToWazeLink(u *url.URL, toInput ToInput) (*WazeLink, error) {
-	g, err := ParseGoogleMapsFromURL(u, toInput)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to parse Google Maps from URL")
-	}
-	return WazeFromLocation(g)
 }
