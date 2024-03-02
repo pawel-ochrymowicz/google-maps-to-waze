@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
-	"strings"
 )
 
 type LatLng struct {
@@ -17,106 +16,104 @@ type LatLng struct {
 }
 
 type Location interface {
-	LatLng() (*LatLng, error)
+	LatLng() (LatLng, error)
 }
 
 const (
-	googleMapsLatLngRegex     = `[-]?[\d]+[.][\d]*,[-]?[\d]+[.][\d]*`
-	googleMapsLatLngSeparator = ","
+	googleMapsLatLngURLRegex     = `(-?\d+\.\d+),\s*(-?\d+\.\d+)`
+	googleMapsLatLngContentRegex = `@` + googleMapsLatLngURLRegex
+)
+
+var (
+	latLngURLPattern     = regexp.MustCompile(googleMapsLatLngURLRegex)
+	latLngContentPattern = regexp.MustCompile(googleMapsLatLngContentRegex)
 )
 
 type GoogleMapsLink struct {
-	latLng *LatLng
+	latLng LatLng
 }
 
-func (l *GoogleMapsLink) LatLng() (*LatLng, error) {
+func (l *GoogleMapsLink) LatLng() (LatLng, error) {
 	return l.latLng, nil
 }
 
 // ParseGoogleMapsFromURL extracts GoogleMapsLink from the given URL.
-func ParseGoogleMapsFromURL(u *url.URL, toInput UrlToInput) (*GoogleMapsLink, error) {
-	latLngPattern, err := regexp.Compile(googleMapsLatLngRegex)
+func ParseGoogleMapsFromURL(u *url.URL, toContent UrlToContent) (*GoogleMapsLink, error) {
+	// First, attempt to extract from URL path.
+	if latLng, err := latLng(u.Path, latLngURLPattern); err == nil {
+		return &GoogleMapsLink{latLng: latLng}, nil
+	}
+
+	// If not found in URL path, use the toContent function to get alternative content.
+	content, err := toContent(u)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to initialize parser")
+		return nil, fmt.Errorf("failed to get content from url: %s, error: %w", u.String(), err)
 	}
-	latLngLookup := latLng(latLngPattern)
-	if latLngPattern.MatchString(u.Path) {
-		var latLng *LatLng
-		latLng, err = latLngLookup(u.Path)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to find lat lng in path: %s", u.Path)
-		}
-		return &GoogleMapsLink{
-			latLng: latLng,
-		}, nil
+
+	// Attempt to extract from the content.
+	if latLng, err := latLng(content, latLngContentPattern); err == nil {
+		return &GoogleMapsLink{latLng: latLng}, nil
 	}
-	var input string
-	input, err = toInput(u)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to get response history from url: %s", u.String())
-	}
-	if latLngPattern.MatchString(input) {
-		var latLng *LatLng
-		latLng, err = latLngLookup(input)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to find lat lng in response")
-		}
-		return &GoogleMapsLink{
-			latLng: latLng,
-		}, nil
-	}
+
 	return nil, fmt.Errorf("failed to find lat lng for url: %s", u.String())
 }
 
-var errNoLatLng = errors.New("failed to find the lat lng")
-
-func latLng(latLngPattern *regexp.Regexp) func(input string) (*LatLng, error) {
-	return func(input string) (*LatLng, error) {
-		matches := latLngPattern.FindAllString(input, 10)
-		if len(matches) == 0 {
-			return nil, errNoLatLng
-		}
-
-		latLngString := matches[len(matches)-1]
-		latLngParts := strings.Split(latLngString, googleMapsLatLngSeparator)
-
-		if len(latLngParts) != 2 {
-			return nil, errors.New("failed to parse lat lng")
-		}
-		parts := latLngParts
-		var lat, lng float64
-		lat, err := parsePointFromString(parts[0])
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to parse lat")
-		}
-		lng, err = parsePointFromString(parts[1])
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to parse lng")
-		}
-
-		latLng := &LatLng{Latitude: lat, Longitude: lng}
-		return latLng, nil
+func latLng(content string, pattern *regexp.Regexp) (LatLng, error) {
+	matches := pattern.FindStringSubmatch(content)
+	if matches == nil || len(matches) < 3 {
+		return LatLng{}, fmt.Errorf("failed to find latitude and longitude in content")
 	}
+
+	lat, err := parsePointFromString(matches[1]) // Assuming matches[2] is latitude based on corrected indices.
+	if err != nil {
+		return LatLng{}, fmt.Errorf("failed to parse latitude: %w", err)
+	}
+
+	lng, err := parsePointFromString(matches[2]) // Assuming matches[1] is longitude based on corrected indices.
+	if err != nil {
+		return LatLng{}, fmt.Errorf("failed to parse longitude: %w", err)
+	}
+
+	// Check if latitude and longitude might be reversed
+	if lat < -90 || lat > 90 {
+		// Swap values if they are reversed
+		lat, lng = lng, lat
+	}
+
+	return LatLng{Latitude: lat, Longitude: lng}, nil
 }
 
 func parsePointFromString(point string) (float64, error) {
 	return strconv.ParseFloat(point, 64)
 }
 
-// UrlToInput is a function that takes a URL and returns a string that represents the input to the URL.
-type UrlToInput func(u *url.URL) (string, error)
+// UrlToContent is a function that takes a URL and returns a string that represents the input to the URL.
+type UrlToContent func(u *url.URL) (string, error)
 
 func HttpGetToInput(httpClient *http.Client) func(*url.URL) (string, error) {
 	return func(u *url.URL) (string, error) {
-		req, _ := http.NewRequest("GET", u.String(), nil)
+		// Create a new HTTP GET request.
+		req, err := http.NewRequest("GET", u.String(), http.NoBody)
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %w", err)
+		}
+
+		// Perform the HTTP GET request.
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			return "", errors.Wrapf(err, "failed to request original url: %s", u.String())
+			return "", fmt.Errorf("failed to request original URL: %s, error: %w", u.String(), err)
 		}
 		defer resp.Body.Close()
+
+		// Check the response status code.
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("request to URL: %s returned non-OK status: %d", u.String(), resp.StatusCode)
+		}
+
+		// Read the response body.
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to read response body")
+			return "", fmt.Errorf("failed to read response body: %w", err)
 		}
 
 		return string(bodyBytes), nil

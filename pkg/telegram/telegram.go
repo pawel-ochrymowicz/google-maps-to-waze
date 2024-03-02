@@ -117,7 +117,14 @@ func (c *clientImpl) message(update *tgbotapi.Update) *Message {
 }
 
 // Poll starts polling for messages and calls the given function f for each message received.
+// It closes the webhook on the bot before starting to poll.
 func (c *clientImpl) Poll(f OnMessage) error {
+	// Close webhook
+	_, err := c.bot.Send(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false})
+	if err != nil {
+		return errors.Wrap(err, "failed to remove webhook")
+	}
+
 	ch := c.bot.GetUpdatesChan(tgbotapi.UpdateConfig{})
 	for update := range ch {
 		msg := c.message(&update)

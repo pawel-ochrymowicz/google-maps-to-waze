@@ -23,9 +23,29 @@ func TestParseGoogleMapsFromURL(t *testing.T) {
 			name:     "Valid URL with lat-lng",
 			inputURL: "https://www.google.com/maps/place/37.4219999,122.0840575",
 			expectedLink: &GoogleMapsLink{
-				latLng: &LatLng{
+				latLng: LatLng{
 					Latitude:  37.4219999,
 					Longitude: 122.0840575,
+				},
+			},
+		},
+		{
+			name:     "Valid URL with lat-lng in reversed order",
+			inputURL: "https://www.google.com/maps/place/107.2161305,-2.4033934",
+			expectedLink: &GoogleMapsLink{
+				latLng: LatLng{
+					Latitude:  -2.4033934,
+					Longitude: 107.2161305,
+				},
+			},
+		},
+		{
+			name:     "Valid google maps URL with lat-lng in content",
+			inputURL: "https://www.google.com/maps/place/Nirvana+Life+Indonesia/@-8.643427,115.1495802,15z/data=!4m20!1m13!4m12!1m4!2m2!1d115.1565824!2d-8.6409216!4e1!1m6!1m2!1s0x2dd239c88caf5ab7:0xc82282485f1666e1!2sNirvana+Life+Indonesia,+Jl.+Tirta+Empul,+Kerobokan,+Kec.+Kuta+Utara,+Kabupaten+Badung,+Bali+80361!2m2!1d115.1646432!2d-8.6455071!3m5!1s0x2dd239c88caf5ab7:0xc82282485f1666e1!8m2!3d-8.6455071!4d115.1646432!16s%2Fg%2F11rq1h0c40?entry=ttu",
+			expectedLink: &GoogleMapsLink{
+				latLng: LatLng{
+					Latitude:  -8.643427,
+					Longitude: 115.1495802,
 				},
 			},
 		},
@@ -88,7 +108,7 @@ func TestParseGoogleMapsFromURL_Shortened(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, link, &GoogleMapsLink{
-		latLng: &LatLng{
+		latLng: LatLng{
 			Latitude:  53.1344674,
 			Longitude: 20.3160387,
 		},
