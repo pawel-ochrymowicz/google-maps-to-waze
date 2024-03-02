@@ -24,15 +24,15 @@ func TestParseGoogleMapsFromURL(t *testing.T) {
 			inputURL: "https://www.google.com/maps/place/37.4219999,122.0840575",
 			expectedLink: &GoogleMapsLink{
 				latLng: &LatLng{
-					Latitude:  "37.4219999",
-					Longitude: "122.0840575",
+					Latitude:  37.4219999,
+					Longitude: 122.0840575,
 				},
 			},
 		},
 		{
 			name:          "Invalid URL",
 			inputURL:      "https://www.example.com",
-			expectedError: "failed to find the lat lng: ",
+			expectedError: "failed to find lat lng for url: https://www.example.com",
 		},
 	}
 
@@ -89,8 +89,8 @@ func TestParseGoogleMapsFromURL_Shortened(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, link, &GoogleMapsLink{
 		latLng: &LatLng{
-			Latitude:  "53.1344674",
-			Longitude: "20.3160387",
+			Latitude:  53.1344674,
+			Longitude: 20.3160387,
 		},
 	})
 }
