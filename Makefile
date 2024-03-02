@@ -46,6 +46,6 @@ shutdown_ngrok:
 	@pkill ngrok
 
 run_webhook: build
-	TELEGRAM_TOKEN=$(TELEGRAM_TOKEN) TELEGRAM_WEBHOOK_LINK=https://8261-43-224-169-50.ngrok-free.app/D1ED928E-C598-401E-BED3-3C225B0703E1 bin/app
+	TELEGRAM_TOKEN=$(TELEGRAM_TOKEN) TELEGRAM_WEBHOOK_LINK=$(TELEGRAM_WEBHOOK_LINK) bin/app
 
 .PHONY: run_poll lint test build ci docker_build docker_push setup_ngrok shutdown_ngrok run_webhook
