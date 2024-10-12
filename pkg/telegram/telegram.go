@@ -2,15 +2,18 @@ package telegram
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/url"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"net/http"
 )
 
 // Client is an interface for interacting with the Telegram API.
 type Client interface {
-	Webhook(domain string, f OnMessage) (*Webhook, error)
+	Webhook(domain *url.URL, f OnMessage) (*Webhook, error)
+	CloseWebhook() error
 	Poll(f OnMessage) error
 }
 
@@ -54,11 +57,11 @@ type Webhook struct {
 }
 
 // Webhook registers a webhook for the given link and returns a Webhook struct containing the webhook path and handler.
-func (c *clientImpl) Webhook(link string, f OnMessage) (*Webhook, error) {
-	if link == "" {
-		return nil, errors.New("failed to read empty domain")
+func (c *clientImpl) Webhook(link *url.URL, f OnMessage) (*Webhook, error) {
+	if link == nil {
+		return nil, errors.New("failed to read nil link")
 	}
-	wh, err := tgbotapi.NewWebhook(link)
+	wh, err := tgbotapi.NewWebhook(link.String())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to initialize webhook")
 	}
@@ -116,15 +119,26 @@ func (c *clientImpl) message(update *tgbotapi.Update) *Message {
 	}
 }
 
-// Poll starts polling for messages and calls the given function f for each message received.
-// It closes the webhook on the bot before starting to poll.
-func (c *clientImpl) Poll(f OnMessage) error {
-	// Close webhook
-	_, err := c.bot.Send(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false})
+func (c *clientImpl) CloseWebhook() error {
+	wh, err := c.bot.GetWebhookInfo()
 	if err != nil {
-		return errors.Wrap(err, "failed to remove webhook")
+		return errors.Wrap(err, "failed to get webhook info")
 	}
 
+	if wh.URL == "" {
+		return nil
+	}
+
+	_, err = c.bot.Send(tgbotapi.DeleteWebhookConfig{DropPendingUpdates: false})
+	if err != nil {
+		return errors.Wrap(err, "failed to delete webhook")
+	}
+
+	return nil
+}
+
+// Poll starts polling for messages and calls the given function f for each message received.
+func (c *clientImpl) Poll(f OnMessage) error {
 	ch := c.bot.GetUpdatesChan(tgbotapi.UpdateConfig{})
 	for update := range ch {
 		msg := c.message(&update)

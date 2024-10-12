@@ -2,32 +2,55 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"time"
+
 	"github.com/pawel-ochrymowicz/google-maps-to-waze/pkg/maps"
 	"github.com/pawel-ochrymowicz/google-maps-to-waze/pkg/telegram"
 	"github.com/pawel-ochrymowicz/google-maps-to-waze/pkg/text"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"net/http"
-	"net/url"
-	"os"
-	"time"
 )
 
 type telegramOpts struct {
 	Token       string
-	WebhookLink string
+	WebhookLink *url.URL
 }
 
 type opts struct {
-	telegram telegramOpts
+	telegram           telegramOpts
+	disableHealthCheck bool
+}
+
+const (
+	healthCheckPath = "/health"
+	serverPort      = 8080
+)
+
+func envOpts() *opts {
+	webhookLinkRaw := os.Getenv("TELEGRAM_WEBHOOK_LINK")
+	var webhookLink *url.URL
+	if webhookLinkRaw != "" {
+		var err error
+		webhookLink, err = url.Parse(webhookLinkRaw)
+		if err != nil {
+			panic(errors.Wrap(err, "failed to parse webhook link"))
+		}
+	}
+
+	return &opts{
+		telegram: telegramOpts{
+			Token:       os.Getenv("TELEGRAM_TOKEN"),
+			WebhookLink: webhookLink,
+		},
+		disableHealthCheck: os.Getenv("DISABLE_HEALTH_CHECK") == "true",
+	}
 }
 
 func main() {
-	opts := &opts{
-		telegram: telegramOpts{
-			Token:       os.Getenv("TELEGRAM_TOKEN"),
-			WebhookLink: os.Getenv("TELEGRAM_WEBHOOK_LINK")}}
-
+	opts := envOpts()
 	tg, err := telegram.New(opts.telegram.Token)
 	if err != nil {
 		panic(errors.Wrap(err, "failed to initialize telegram"))
@@ -35,34 +58,41 @@ func main() {
 
 	// Initialize polling api when no webhook link provided
 	ch := make(chan error)
-	if opts.telegram.WebhookLink == "" {
+	if opts.telegram.WebhookLink == nil {
 		go func() {
+			// Close possible webhook
+			if err := tg.CloseWebhook(); err != nil {
+				ch <- err
+			}
+
 			if err := tg.Poll(onMessage); err != nil {
 				ch <- err
 			}
 		}()
 	}
 	var serverOpts []serverOpt
-	if opts.telegram.WebhookLink != "" {
+	if opts.telegram.WebhookLink != nil {
 		var wh *telegram.Webhook
 		wh, err = tg.Webhook(opts.telegram.WebhookLink, onMessage)
 		if err != nil {
 			panic(errors.Wrap(err, "failed to initialize webhook"))
 		}
-		var u *url.URL
-		u, err = url.Parse(opts.telegram.WebhookLink)
-		if err != nil {
-			panic(errors.Wrap(err, "failed to parse webhook url"))
-		}
-		serverOpts = append(serverOpts, withTelegramWebhook(u.Path, wh))
+		serverOpts = append(serverOpts, withTelegramWebhook(opts.telegram.WebhookLink.Path, wh))
 	}
-	go func() {
-		log.Infof("Starting server on port %d", serverPort)
-		srv := server(serverOpts...)
-		if err := srv.ListenAndServe(); err != nil {
-			ch <- err
-		}
-	}()
+
+	if !opts.disableHealthCheck {
+		serverOpts = append(serverOpts, withHealthCheck())
+	}
+
+	if len(serverOpts) > 0 {
+		go func() {
+			log.Infof("Starting server on port %d", serverPort)
+			srv := server(serverOpts...)
+			if err := srv.ListenAndServe(); err != nil {
+				ch <- err
+			}
+		}()
+	}
 	panic(<-ch)
 }
 
@@ -120,10 +150,14 @@ func withTelegramWebhook(path string, wh *telegram.Webhook) serverOpt {
 	}
 }
 
-const (
-	healthCheckPath = "/health"
-	serverPort      = 8080
-)
+// withHealthCheck is a serverOpt that adds a health check endpoint to the server.
+func withHealthCheck() serverOpt {
+	return func(mux *http.ServeMux) {
+		mux.Handle(healthCheckPath, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(200)
+		}))
+	}
+}
 
 // server creates a http server with a health check endpoint and a webhook endpoint.
 func server(opts ...serverOpt) *http.Server {
@@ -131,7 +165,6 @@ func server(opts ...serverOpt) *http.Server {
 	for _, o := range opts {
 		o(mux)
 	}
-	mux.Handle(healthCheckPath, http.HandlerFunc(healthCheck))
 	return &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", "", serverPort),
 		Handler:           mux,
@@ -139,9 +172,4 @@ func server(opts ...serverOpt) *http.Server {
 		WriteTimeout:      5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
-}
-
-// healthCheck is a handler for health check endpoint.
-func healthCheck(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(200)
 }
