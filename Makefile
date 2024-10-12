@@ -4,7 +4,7 @@ SOURCE_FILES?=./...
 TEST_PATTERN?=.
 TEST_OPTIONS?=
 
-export GOLANGCI_LINT_VERSION := v1.52.2
+export GOLANGCI_LINT_VERSION := v1.61.0
 export GO111MODULE := on
 export GOFLAGS := -mod=vendor
 export LOCAL_SERVER_PORT := 8888
